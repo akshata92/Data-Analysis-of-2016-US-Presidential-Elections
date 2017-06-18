@@ -1,0 +1,516 @@
+---
+title: "Analysing US Presidential Election"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+##Libraries 
+library(magrittr)
+library(dplyr)
+library(e1071)
+library(cwhmisc)
+library(stringr)
+library(nnet)
+library(pracma)
+library(e1071)
+library(cwhmisc)
+library(ggplot2)
+library(randomForest)
+library(sqldf)
+library(rgdal)
+library(readr)
+library(scales)
+library(kernlab)
+library(caret)
+setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
+```
+
+## Data Input
+```{r}
+setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
+results<-read.csv("primary_results.csv")
+county.demo<-read.csv("county_facts.csv")
+dictionary <- read_csv("county_facts_dictionary.csv")
+head(results)
+head(county.demo)
+```
+
+## Generating the Republican Data Frames
+```{r}
+#setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
+results<-read.csv("primary_results.csv")
+#Separating Republican Results
+Republican.votes<-results %>%
+  filter(party=="Republican")
+
+#Finding countywise winners for Republicans
+countyWinnerR<-Republican.votes %>%
+  group_by(state, state_abbreviation,county,fips) %>%
+  summarize(winner = candidate[which.max(fraction_votes)],
+            fraction_votes = max(fraction_votes),
+            votes = max(votes))
+countyWinnerR$winner<-factor(countyWinnerR$winner)
+head(countyWinnerR)
+
+#Merging county winners and demographics
+votesR <- merge(countyWinnerR, county.demo, by = c("fips", "state_abbreviation"))
+
+#Creating Train and Test sets 
+index <- 1:nrow(votesR)
+testindex <- sample(index, trunc(length(index)/5))
+testR <- votesR[testindex,]
+trainR <- votesR[-testindex,]
+```
+
+## Generating the Democratic Data Frames
+```{r}
+#Separating Democratic Results
+Democrats.votes<-results %>%
+  filter(party=="Democrat")
+
+#Finding countywise winners for Democrats
+countyWinnerD<-Democrats.votes %>%
+  group_by(state,state_abbreviation,county,fips) %>%
+  summarize(winner = candidate[which.max(fraction_votes)],
+            fraction_votes = max(fraction_votes),
+            votes = max(votes))
+countyWinnerD$winner<-factor(countyWinnerD$winner)
+head(countyWinnerD)
+
+#Merging county winners and demographics
+votesD <- merge(countyWinnerD, county.demo, by = c("fips", "state_abbreviation"))
+
+#Creating Train and Test sets 
+index <- 1:nrow(votesD)
+testindex <- sample(index, trunc(length(index)/5))
+testD <- votesD[testindex,]
+trainD <- votesD[-testindex,]
+```
+
+## Analysing Trends
+```{r}
+library(plyr)
+library(rgeos)
+library(rgdal)
+library(maptools)
+library(maps)
+library(RColorBrewer)
+library(gpclib)
+stateAbbreviation <- "IA"
+primaryResults <- read.csv("primary_results.csv")
+counties <- readOGR(dsn="county_shapefiles", layer="cb_2014_us_county_500k")
+
+
+counties@data$id <- rownames(counties@data)
+counties.points <- fortify(counties, region="id")
+counties.df <- join(counties.points, counties@data, by="id")
+
+stateFips <- state.fips$fips[state.fips$abb==stateAbbreviation]
+state <- primaryResults[primaryResults$state_abbreviation==stateAbbreviation,]$state[[1]]
+stateCounties <- counties.df[counties.df$STATEFP==stateFips,]
+
+Plot_Map <- function(stateCounties, primaryResults, stateAbbreviation, party)
+{
+stateResults <- merge(stateCounties, primaryResults[primaryResults$state_abbreviation==stateAbbreviation & primaryResults$party==party,], by.x="NAME", by.y="county")
+stateResults <- stateResults[order(stateResults$order),]
+
+p <- ggplot(stateResults) + 
+  aes(long,lat,group=group,fill=fraction_votes) + 
+  geom_polygon() +
+  geom_path(color="white") +
+  facet_wrap(~candidate) +
+  coord_equal() +
+  scale_fill_gradientn(name="Votes",
+                       colours=brewer.pal(11,"RdYlGn"),
+                       labels=percent) + 
+  theme_light(base_size=16) +
+  theme(strip.text.x = element_text(size=10, colour="black"),
+        strip.background = element_rect(colour="white", fill="white"),
+        axis.line=element_blank(),axis.text.x=element_blank(),
+        axis.text.y=element_blank(),axis.ticks=element_blank(),
+        axis.title.x=element_blank(),axis.title.y=element_blank(),
+        panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),plot.background=element_blank()) +
+  ggtitle(paste("2016", state, party, "Primary Results"))
+return(p)
+}
+
+plot_R<-Plot_Map(stateCounties, primaryResults, stateAbbreviation, "Republican")
+print(plot_R)
+plot_D<-Plot_Map(stateCounties, primaryResults, stateAbbreviation, "Democrat")
+print(plot_D)
+```
+
+### Number of counties won per state for Republicans 
+```{r}
+stateCountR<-sqldf('select state,winner,count(winner) as countyswon from countyWinnerR group by state,winner')
+ggplot(data = stateCountR, aes(x = state , y = countyswon  , group = winner, fill = winner)) + geom_bar(stat = "identity", width = 0.75, position = "dodge") + ggtitle("Republican Party - Statewise Winners") + theme(axis.text.x = element_text(angle = 90))+ ylab("Number of Countys Won") + xlab("State")
+```
+
+### Number of counties won per state for Democrats 
+```{r}
+stateCountD<-sqldf('select state,winner,count(winner) as countyswon from countyWinnerD group by state,winner')
+ggplot(data = stateCountD, aes(x = state , y = countyswon  , group = winner, fill = winner)) + geom_bar(stat = "identity", width = 0.75, position = "dodge")+ ggtitle("Democratic Party - Statewise Winners") + theme(axis.text.x = element_text(angle = 90)) + ylab("Number of Countys Won") + xlab("State")
+```
+
+### County wins plotted against county demographics
+```{r}
+Demographics <- county.demo %>%
+    filter(state_abbreviation %in% c("IA", "NV", "SC", "AL", "NH")) %>% 
+    select(state_abbreviation = state_abbreviation, county = area_name, 
+           median_income = INC110213, per_capita_income = INC910213, hispanic = RHI725214, poverty=PVY020213, white= RHI825214, college = EDU685213, highschool = EDU635213, density = POP060210, female = SEX255214, black=RHI225214) %>% 
+   mutate(county = gsub(" County", "", county))
+
+countyWinnerD_Demographics <- merge(countyWinnerD, Demographics, by = c("state_abbreviation", "county"))
+countyWinnerR_Demographics <- merge(countyWinnerR, Demographics, by = c("state_abbreviation", "county"))
+```
+
+### Effect of Education and Population below poverty level
+```{r}
+ggplot(data=countyWinnerD_Demographics, aes(x = poverty , y = highschool,color = winner)) + geom_point()+ ggtitle("Democrat County Winners by Poverty level and Educational Attainment") + xlab("People Below Poverty Level %") + ylab("People With High School Education or More %")
+
+ggplot(data=countyWinnerR_Demographics, aes(x = poverty , y = highschool,color = winner)) + geom_point()+ ggtitle("Republican County Winners by Poverty level and Educational Attainment") + xlab("People Below Poverty Level %") + ylab("People With High School Education or More %")
+```
+
+### Effect of Median Househod Income and Race
+```{r}
+ggplot(data=countyWinnerD_Demographics, aes(x = median_income , y = black,color = winner)) + geom_point()+ ggtitle("Democrat County Winners by African American population and Median Income") + xlab("Median Household Income") + ylab("African American Population %")
+
+ggplot(data=countyWinnerR_Demographics, aes(x = median_income , y = black,color = winner)) + geom_point()+ ggtitle("Reoublican County Winners by African American population and Median Income") + xlab("Median Household Income") + ylab("African American Population %")
+```
+
+
+### Corelations between demographics and number of votes for Individual Candidates
+```{r}
+data <- merge(results,county.demo, by="fips")
+
+candidateList <- c("Hillary Clinton","Bernie Sanders","Donald Trump","Marco Rubio","Ted Cruz")
+                    
+for(candidate in candidateList) 
+{
+  candidate_cor <- data.frame("var"=dictionary$description, "name"=dictionary$column_name)
+  candidate_cor$cor <- c(cor(data[data$candidate==candidate,]$fraction_votes,
+                             data[data$candidate==candidate, dictionary$column_name]))
+  candidate_cor <- candidate_cor[order(candidate_cor$cor),]
+  candidate_cor$var <- factor(candidate_cor$var, levels=candidate_cor$var)
+  p <- ggplot(candidate_cor, aes(x=var, y=cor, color= cor)) + 
+    geom_point(stat="identity") +
+    coord_flip() + 
+    ylab("Correlation") + xlab("") +
+    theme(axis.text = element_text(size=6),
+          axis.title = element_text(size=6),
+          title = element_text(size=8)) +
+    ggtitle(paste0(candidate, " : Correlation Between Votes & County Demographics"))
+  print(p)
+}
+```
+
+### Correlation between Demographics
+```{r}
+merged<-read.csv("merged.csv")
+
+Republican.votes<-merged %>%
+  filter(party=="Republican")
+
+Democrats.votes<-merged %>%
+  filter(party=="Democrat")
+
+# Finding correlation between Race variables
+#--------------------------------------------------------------------------
+library(corrplot)
+library(caret)
+raceR<-Republican.votes[, c(20:27)]
+raceR.corr<-cor(raceR)
+corrplot(raceR.corr)
+findCorrelation(raceR.corr, cutoff = .50, verbose = TRUE, names = TRUE, exact = TRUE)
+
+raceD<-Democrats.votes[, c(20:27)]
+raceD.corr<-cor(raceD)
+corrplot(raceD.corr)
+findCorrelation(raceD.corr, cutoff = .50, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------
+# Finding correlation between Education Variables
+educationR<-Republican.votes[, c(31:32)]
+educationR.corr<-cor(educationR)
+corrplot(educationR.corr)
+findCorrelation(educationR.corr, cutoff = .50, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------
+# Finding correlation between Education Variables and Veteran variable
+educationVR<-Republican.votes[, c(31:33)]
+educationVR.corr<-cor(educationVR)
+corrplot(educationVR.corr)
+findCorrelation(educationVR.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+
+#----------------------------------------------------------------------------------------
+findCorrelation(educationR.corr, cutoff = .50, verbose = TRUE, names = TRUE, exact = TRUE)
+#Finding correlation between Race and Education variables
+eduraceR<-Republican.votes[,c(21,22,23,24,26,31)]
+eduraceR.corr<-cor(eduraceR)
+corrplot(eduraceR.corr)
+findCorrelation(eduraceR.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#---------------------------------------------------------------------------
+# Finding correlation between age and sex variables
+agesexR<-Republican.votes[, c(16:19)]
+agesexR.corr<-cor(agesexR)
+corrplot(agesexR.corr)
+findCorrelation(agesexR.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#-----------------------------------------------------------------------------
+#Finding correlation between Age, Sex(Females only), Education and Race Variables
+ASER<-Republican.votes[, c(18,19,22,23,26,32)]
+ASER.corr<-cor(ASER)
+corrplot(ASER.corr)
+findCorrelation(ASER.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#------------------------------------------------------------------------------
+#Finding correlation between population variables
+popR<-Republican.votes[, c(12:15)]
+pop.corr<-cor(popR)
+corrplot(pop.corr)
+findCorrelation(pop.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#-------------------------------------------------------------------------------
+#Finding correlation between Age, Education and Race Variables
+AER<-Republican.votes[, c(18,22,23,26,32)]
+AER.corr<-cor(AER)
+corrplot(AER.corr)
+findCorrelation(AER.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#---------------------------------------------------------------------------------
+#Finding correlation between Race and Poverty level
+
+RP<-Republican.votes[, c(21,22,23,24,26,43)]
+RP.corr<-cor(RP)
+corrplot(RP.corr)
+findCorrelation(RP.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------------
+#Finding correlation between Race and Income variables
+eduraceR<-Republican.votes[,c(26,41,42)]
+eduraceR.corr<-cor(eduraceR)
+corrplot(eduraceR.corr)
+findCorrelation(eduraceR.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#-------------------------------------------------------------------------------------
+#Finding correlation between Hispanic and Poverty variables
+eduraceR<-Republican.votes[,c(26,43)]
+eduraceR.corr<-cor(eduraceR)
+corrplot(eduraceR.corr)
+findCorrelation(eduraceR.corr, cutoff = .60, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------------------
+#Finding correlation between Hispanic and Poverty, and age 65+ variables, education (Highschool)
+eduraceR<-Republican.votes[,c(26,43,31,18)]
+eduraceR.corr<-cor(eduraceR)
+corrplot(eduraceR.corr)
+findCorrelation(eduraceR.corr, cutoff = .70, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------------------
+#Finding correlation between white and education (Bachelor)
+eduraceR<-Republican.votes[,c(20,32)]
+eduraceR.corr<-cor(eduraceR)
+corrplot(eduraceR.corr)
+findCorrelation(eduraceR.corr, cutoff = .70, verbose = TRUE, names = TRUE, exact = TRUE)
+#----------------------------------------------------------------------------------------
+```
+
+## Republican Predictive Models
+```{r}
+Function_Prediction <- function(testdata, model){
+  testdata$Predicted  <- predict(model, testdata)
+  misClassificError_glm_2 <- mean(testdata$Predicted != testdata$winner)
+  return(1-misClassificError_glm_2)
+}
+#library(kernlab)
+#Model 1 
+#Inputs: White alone, White alone(pop above 18yrs), African American, Persons below Poverty Level, High School Graduates, (25 yrs+), Bachelor???s degree, (25 yrs+), Under 18yrs, Per capita money income in past 12 months, Median household income 
+LR_TEST1 <- Function_Prediction(testR, (multinom(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR)))
+
+
+SVM_RAD_TEST1 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR,kernel= "rbfdot")))
+
+SVM_VD_TEST1 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR,kernel= "vanilladot")))
+
+SVM_LP_TEST1 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR,kernel= "laplacedot")))
+
+SVM_BD_TEST1 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR,kernel= "besseldot")))
+
+Model1_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_1= c(LR_TEST1, SVM_RAD_TEST1, SVM_VD_TEST1, SVM_LP_TEST1, SVM_BD_TEST1))
+
+#Model 2
+#Inputs: White alone, African American, Persons below Poverty Level, High School Graduates, (25 yrs+), Bachelor???s degree, (25 yrs+), Under 18yrs, 65 yrs+, Per capita money income in past 12 months, Median household income, Population per Square mile 
+LR_TEST2 <- Function_Prediction(testR, (multinom(winner ~ RHI825214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+AGE295214+INC910213+INC110213+POP060210, data=trainR)))
+
+SVM_RAD_TEST2 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+AGE295214+INC910213+INC110213+POP060210, data=trainR,kernel= "rbfdot")))
+
+SVM_VD_TEST2 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+AGE295214+INC910213+INC110213+POP060210, data=trainR,kernel= "vanilladot")))
+
+SVM_LP_TEST2 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+AGE295214+INC910213+INC110213+POP060210, data=trainR,kernel= "laplacedot")))
+
+SVM_BD_TEST2 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+AGE295214+INC910213+INC110213+POP060210, data=trainR,kernel= "besseldot")))
+
+Model2_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_2= c(LR_TEST2, SVM_RAD_TEST2, SVM_VD_TEST2, SVM_LP_TEST2, SVM_BD_TEST2))
+
+#Model 3
+#Inputs: White alone, African American+White alone(pop above 18yrs), Persons below Poverty Level,High School Graduates, (25 yrs+), Bachelor???s degree, (25 yrs+), 65 yrs+, Per capita money income in past 12 months 
+LR_TEST3 <- Function_Prediction(testR, (multinom(winner ~ RHI825214+RHI125214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+INC910213, data=trainR)))
+
+SVM_RAD_TEST3 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI125214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+INC910213, data=trainR,kernel= "rbfdot")))
+
+SVM_VD_TEST3 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI125214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+INC910213, data=trainR,kernel= "vanilladot")))
+
+SVM_LP_TEST3 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI125214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+INC910213, data=trainR,kernel= "laplacedot")))
+
+SVM_BD_TEST3 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI125214+RHI225214+PVY020213+EDU685213+EDU635213+AGE775214+INC910213, data=trainR,kernel= "besseldot")))
+
+Model3_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_3= c(LR_TEST3, SVM_RAD_TEST3, SVM_VD_TEST3, SVM_LP_TEST3, SVM_BD_TEST3))
+
+#Model 4
+#Inputs: Hispanic or Latino, Persons below Poverty Level, High School Graduates, (25 yrs+), Bachelor???s degree, (25 yrs+), Under 18 yrs+ Female persons
+LR_TEST4 <- Function_Prediction(testR, (multinom(winner ~ RHI725214+PVY020213+EDU685213+EDU635213+AGE295214+SEX255214+POP815213+POP645213, data=trainR)))
+
+SVM_RAD_TEST4 <- Function_Prediction(testR, (ksvm(winner ~ RHI725214+PVY020213+EDU685213+EDU635213+AGE295214+SEX255214+POP815213+POP645213, data=trainR,kernel= "rbfdot")))
+
+SVM_VD_TEST4 <- Function_Prediction(testR, (ksvm(winner ~ RHI725214+PVY020213+EDU685213+EDU635213+AGE295214+SEX255214+POP815213+POP645213, data=trainR,kernel= "vanilladot")))
+
+SVM_LP_TEST4 <- Function_Prediction(testR, (ksvm(winner ~ RHI725214+PVY020213+EDU685213+EDU635213+AGE295214+SEX255214+POP815213+POP645213, data=trainR,kernel= "laplacedot")))
+
+SVM_BD_TEST4 <- Function_Prediction(testR, (ksvm(winner ~ RHI725214+PVY020213+EDU685213+EDU635213+AGE295214+SEX255214+POP815213+POP645213, data=trainR,kernel= "besseldot")))
+
+Model4_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_4= c(LR_TEST4, SVM_RAD_TEST4, SVM_VD_TEST4, SVM_LP_TEST4, SVM_BD_TEST4))
+
+#Model 5
+#Inputs: White alone(pop above 18yrs), African American, White alone, Persons below Poverty Level, Bachelor???s degree, (25 yrs+), High School Graduates, (25 yrs+) ,Per capita money income in past 12 months, Median household income 
+LR_TEST5 <- Function_Prediction(testR, (multinom(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+INC910213+INC110213, data=trainR)))
+
+SVM_RAD_TEST5 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+INC910213+INC110213, data=trainR,kernel= "rbfdot")))
+
+SVM_VD_TEST5 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+INC910213+INC110213, data=trainR,kernel= "vanilladot")))
+
+SVM_LP_TEST5 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+INC910213+INC110213, data=trainR,kernel= "laplacedot")))
+
+SVM_BD_TEST5 <- Function_Prediction(testR, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+INC910213+INC110213, data=trainR,kernel= "besseldot")))
+
+Model5_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_5= c(LR_TEST5, SVM_RAD_TEST5, SVM_VD_TEST5, SVM_LP_TEST5, SVM_BD_TEST5))
+
+Accuracy_1 <- merge(Model1_Accuracies, Model2_Accuracies, by = c("Algorithms"))
+Accuracy_2 <- merge(Model3_Accuracies, Model4_Accuracies, by = c("Algorithms"))
+Accuracy_3 <- merge(Accuracy_1, Accuracy_2, by = c("Algorithms"))
+Accuracy <- merge(Accuracy_3, Model5_Accuracies, by = c("Algorithms"))
+
+
+```
+
+### Republican Model Accuracies
+```{r}
+Accuracy
+```
+
+## Democrat Predictive Models
+```{r}
+Function_Prediction <- function(testdata, model){
+  testdata$Predicted  <- predict(model, testdata)
+  misClassificError_glm_2 <- mean(testdata$Predicted != testdata$winner)
+  return(1-misClassificError_glm_2)
+}
+#library(kernlab)
+#Model 1 
+#Inputs: White Alone, 65 yrs, Bachelor???s degree, (25 yrs+), Median household income 
+LR_TEST1 <- Function_Prediction(testD, (multinom(winner ~ RHI825214+RHI125214+EDU685213+INC110213+AGE775214, data=trainD)))
+
+SVM_RAD_TEST1 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+INC110213+AGE775214, data=trainD,kernel= "rbfdot")))
+
+SVM_VD_TEST1 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+INC110213+AGE775214, data=trainD,kernel= "vanilladot")))
+
+SVM_LP_TEST1 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+INC110213+AGE775214, data=trainD,kernel= "laplacedot")))
+
+SVM_BD_TEST1 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+INC110213+AGE775214, data=trainD,kernel= "besseldot")))
+
+Model1_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), MOdel_1= c(LR_TEST1, SVM_RAD_TEST1, SVM_VD_TEST1, SVM_LP_TEST1, SVM_BD_TEST1))
+
+#Model 2
+#Inputs: White alone, Bachelor???s degree, (25 yrs+), White alone(Not Hispanic or Latino) 
+LR_TEST2 <- Function_Prediction(testD, (multinom(winner ~ RHI825214+RHI125214+EDU685213, data=trainD)))
+
+SVM_RAD_TEST2 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213, data=trainD,kernel= "rbfdot")))
+
+SVM_VD_TEST2 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213, data=trainD,kernel= "vanilladot")))
+
+SVM_LP_TEST2 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213, data=trainD,kernel= "laplacedot")))
+
+SVM_BD_TEST2 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213, data=trainD,kernel= "besseldot")))
+
+Model2_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_2= c(LR_TEST2, SVM_RAD_TEST2, SVM_VD_TEST2, SVM_LP_TEST2, SVM_BD_TEST2))
+
+#Model 3
+#Inputs: White alone, Bachelor???s degree, (25 yrs+), 65 yrs
+LR_TEST3 <- Function_Prediction(testD, (multinom(winner ~ RHI825214+RHI125214+EDU685213+AGE775214 , data=trainD)))
+
+SVM_RAD_TEST3 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+AGE775214, data=trainD,kernel= "rbfdot")))
+
+SVM_VD_TEST3 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+AGE775214, data=trainD,kernel= "vanilladot")))
+
+SVM_LP_TEST3 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+AGE775214, data=trainD,kernel= "laplacedot")))
+
+SVM_BD_TEST3 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI125214+EDU685213+AGE775214, data=trainD,kernel= "besseldot")))
+
+Model3_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_3= c(LR_TEST3, SVM_RAD_TEST3, SVM_VD_TEST3, SVM_LP_TEST3, SVM_BD_TEST3))
+
+#Model 4
+#Inputs: African American, White alone, 65 yrs + ,Bachelor???s degree, (25 yrs+), Median household income 
+LR_TEST4 <- Function_Prediction(testD, (multinom(winner ~ RHI225214+RHI125214+EDU685213+AGE775214+EDU685213+INC110213, data=trainD)))
+
+SVM_RAD_TEST4 <- Function_Prediction(testD, (ksvm(winner ~ RHI225214+RHI125214+EDU685213+AGE775214+EDU685213+INC110213, data=trainD,kernel= "rbfdot")))
+
+SVM_VD_TEST4 <- Function_Prediction(testD, (ksvm(winner ~ RHI225214+RHI125214+EDU685213+AGE775214+EDU685213+INC110213, data=trainD,kernel= "vanilladot")))
+
+SVM_LP_TEST4 <- Function_Prediction(testD, (ksvm(winner ~ RHI225214+RHI125214+EDU685213+AGE775214+EDU685213+INC110213, data=trainD,kernel= "laplacedot")))
+
+SVM_BD_TEST4 <- Function_Prediction(testD, (ksvm(winner ~ RHI225214+RHI125214+EDU685213+AGE775214+EDU685213+INC110213, data=trainD,kernel= "besseldot")))
+
+Model4_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_4= c(LR_TEST4, SVM_RAD_TEST4, SVM_VD_TEST4, SVM_LP_TEST4, SVM_BD_TEST4))
+
+#Model 5
+#Inputs:White alone, White alone(pop above 18yrs), African American+High School Graduates, (25 yrs+), Bachelor???s degree, (25 yrs+), Under 18yrs 
+LR_TEST5 <- Function_Prediction(testD, (multinom(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214, data=trainD)))
+
+SVM_RAD_TEST5 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214, data=trainD,kernel= "rbfdot")))
+
+SVM_VD_TEST5 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214, data=trainD,kernel= "vanilladot")))
+
+SVM_LP_TEST5 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214, data=trainD,kernel= "laplacedot")))
+
+SVM_BD_TEST5 <- Function_Prediction(testD, (ksvm(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214, data=trainD,kernel= "besseldot")))
+Model5_Accuracies <- data.frame(Algorithms = c("Logistic Regression", "SVM Radial","SVM Linear","SVM Laplacian", "SVM Bessel"), Model_5= c(LR_TEST5, SVM_RAD_TEST5, SVM_VD_TEST5, SVM_LP_TEST5, SVM_BD_TEST5))
+
+Accuracy_1 <- merge(Model1_Accuracies, Model2_Accuracies, by = c("Algorithms"))
+Accuracy_2 <- merge(Model3_Accuracies, Model4_Accuracies, by = c("Algorithms"))
+Accuracy_3 <- merge(Accuracy_1, Accuracy_2, by = c("Algorithms"))
+Accuracy <- merge(Accuracy_3, Model5_Accuracies, by = c("Algorithms"))
+```
+
+### Democrat Model Accuracies
+```{r}
+Accuracy
+```
+
+## Evaluating Final Models 
+```{r}
+county.demo<-read.csv("county_facts.csv")
+maryland_Demo <- county.demo %>%
+  filter(state_abbreviation=="MD")
+###Output For Maryland
+
+## Republic 
+Final_Republican_Model <- (ksvm(winner ~ RHI825214+RHI225214+RHI125214+PVY020213+EDU685213+EDU635213+AGE295214+INC910213+INC110213, data=trainR,kernel= "rbfdot"))
+testR$Predicted  <- predict(Final_Republican_Model, testR)
+confusionMatrix(testR$Predicted, testR$winner)
+
+## Democratic
+Final_Democratic_Model <- (ksvm(winner ~ RHI825214+RHI225214+RHI125214+EDU685213+EDU635213+AGE295214,data=trainD,kernel= "rbfdot"))
+testD$Predicted  <- predict(Final_Democratic_Model, testD)
+confusionMatrix(testD$Predicted, testD$winner)
+
+maryland_Demo$Predicted_Republican <- predict(Final_Republican_Model,maryland_Demo)
+maryland_Demo$Predicted_Democratic <- predict(Final_Democratic_Model, maryland_Demo)
+```
+
+### Maryland Primaries Predictions
+```{r}
+#Republicans
+summary(maryland_Demo$Predicted_Republican)
+#Democrats
+summary(maryland_Demo$Predicted_Democratic)
+write.csv(maryland_Demo,"Maryland_Predicted_Final.csv")
