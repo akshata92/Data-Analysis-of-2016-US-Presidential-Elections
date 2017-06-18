@@ -27,7 +27,7 @@ setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
 
 ## Data Input
 ```{r}
-setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
+setwd("/Users/akshata/Desktop/Digging Into Data/Project")
 results<-read.csv("primary_results.csv")
 county.demo<-read.csv("county_facts.csv")
 dictionary <- read_csv("county_facts_dictionary.csv")
@@ -37,7 +37,7 @@ head(county.demo)
 
 ## Generating the Republican Data Frames
 ```{r}
-#setwd("/Users/janhavi 1/Desktop/Digging Into Data/Project")
+#setwd("/Users/akshata/Desktop/Digging Into Data/Project")
 results<-read.csv("primary_results.csv")
 #Separating Republican Results
 Republican.votes<-results %>%
